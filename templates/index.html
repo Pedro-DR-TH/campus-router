@@ -1,0 +1,160 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Campus Route Finder</title>
+<style>
+  body { background: #000; color: #eee; font-family: sans-serif; text-align: center; }
+  select, button { font-size: 16px; padding: 6px 10px; margin: 8px; }
+  #controls { margin: 16px; }
+  canvas { border: 1px solid #333; background: #000; }
+  #info { margin-top: 8px; font-size: 14px; color: #aaa; }
+</style>
+</head>
+<body>
+  <h2>Baylor Campus Route Finder</h2>
+
+  <div id="controls">
+    Start:
+    <select id="source">
+      {% for name in poi_names %}<option value="{{ name }}">{{ name }}</option>{% endfor %}
+    </select>
+    Target:
+    <select id="target">
+      {% for name in poi_names %}<option value="{{ name }}">{{ name }}</option>{% endfor %}
+    </select>
+    Alternatives (K):
+    <select id="k">
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="3" selected>3</option>
+    </select>
+    <button onclick="findRoute()">Find Route</button>
+  </div>
+
+  <canvas id="canvas" width="1000" height="1000"></canvas>
+  <div id="info"></div>
+
+<script>
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const PATH_COLORS = ['#dc143c', '#ff8c00', '#ba55d3', '#00ff00', '#00ffff'];
+
+let graph = null;
+let bounds = null;
+
+function computeBounds(nodes) {
+  let xs = Object.values(nodes).map(n => n.x);
+  let ys = Object.values(nodes).map(n => n.y);
+  return { minx: Math.min(...xs), maxx: Math.max(...xs),
+           miny: Math.min(...ys), maxy: Math.max(...ys) };
+}
+
+function project(x, y) {
+  const pad = 40;
+  const w = canvas.width - 2 * pad, h = canvas.height - 2 * pad;
+  const px = pad + ((x - bounds.minx) / (bounds.maxx - bounds.minx)) * w;
+  const py = pad + (1 - (y - bounds.miny) / (bounds.maxy - bounds.miny)) * h;
+  return [px, py];
+}
+
+function drawBaseGraph() {
+  ctx.fillStyle = '#000';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  ctx.strokeStyle = '#4d4d4d';
+  ctx.lineWidth = 0.5;
+  graph.edges.forEach(e => {
+    const a = graph.nodes[e.u], b = graph.nodes[e.v];
+    if (!a || !b) return;
+    const [ax, ay] = project(a.x, a.y);
+    const [bx, by] = project(b.x, b.y);
+    ctx.beginPath();
+    ctx.moveTo(ax, ay);
+    ctx.lineTo(bx, by);
+    ctx.stroke();
+  });
+
+  ctx.fillStyle = '#808080';
+  Object.values(graph.nodes).forEach(n => {
+    const [px, py] = project(n.x, n.y);
+    ctx.beginPath();
+    ctx.arc(px, py, 1.2, 0, 2 * Math.PI);
+    ctx.fill();
+  });
+
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 13px sans-serif';
+  Object.entries(graph.pois).forEach(([name, nid]) => {
+    const n = graph.nodes[nid];
+    if (!n) return;
+    const [px, py] = project(n.x, n.y);
+    ctx.beginPath();
+    ctx.arc(px, py, 4, 0, 2 * Math.PI);
+    ctx.fill();
+    ctx.fillText(name, px + 6, py - 6);
+  });
+}
+
+async function loadGraph() {
+  const res = await fetch('/api/graph');
+  graph = await res.json();
+  bounds = computeBounds(graph.nodes);
+  drawBaseGraph();
+}
+
+function animatePath(coords, color, speedMsPerSegment = 60) {
+  return new Promise(resolve => {
+    let i = 0;
+    function step() {
+      if (i >= coords.length - 1) return resolve();
+      const [ax, ay] = project(coords[i].x, coords[i].y);
+      const [bx, by] = project(coords[i + 1].x, coords[i + 1].y);
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(ax, ay);
+      ctx.lineTo(bx, by);
+      ctx.stroke();
+      i++;
+      setTimeout(step, speedMsPerSegment);
+    }
+    step();
+  });
+}
+
+async function findRoute() {
+  const source = document.getElementById('source').value;
+  const target = document.getElementById('target').value;
+  const k = document.getElementById('k').value;
+  const info = document.getElementById('info');
+
+  if (source === target) {
+    info.textContent = 'Pick two different locations.';
+    return;
+  }
+
+  info.textContent = 'Finding route...';
+  drawBaseGraph();
+
+  const res = await fetch(`/api/route?source=${source}&target=${target}&k=${k}`);
+  const data = await res.json();
+
+  if (data.error) {
+    info.textContent = data.error;
+    return;
+  }
+
+  info.textContent = data.paths.map((p, i) =>
+    `Path ${i + 1}: ${p.length_m} m`).join('   |   ');
+
+  for (let i = data.paths.length - 1; i >= 0; i--) {
+    await animatePath(data.paths[i].coords, PATH_COLORS[i % PATH_COLORS.length]);
+  }
+}
+
+loadGraph();
+</script>
+</body>
+</html>
